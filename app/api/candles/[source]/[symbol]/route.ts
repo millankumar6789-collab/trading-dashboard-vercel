@@ -1,112 +1,150 @@
 /**
  * /api/candles/[source]/[symbol]
  *
- * Server-side REST proxy for yfinance. Runs on Vercel's nodejs runtime
- * (NOT edge — edge intercepts outbound fetches and returns redirects).
- *
- * For yfinance sources, fetches historical candles via yfinance and
- * returns them as JSON. For WebSocket-type sources (hyperliquid),
- * the browser connects directly to Hyperliquid — no proxy needed.
+ * Server-side REST proxy. Runs on Vercel's nodejs runtime.
+ * For yfinance: fetches via Yahoo Finance public chart API.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { SOURCES, YF_INTERVAL_MAP, YF_PERIOD_MAP, Timeframe } from "@/lib/data_sources";
+import { Timeframe } from "@/lib/data_sources";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const YF_INTERVAL_MAP: Record<Timeframe, string> = {
+  "1m": "1m",
+  "5m": "5m",
+  "15m": "15m",
+  "1h": "1h",
+  "4h": "1h", // 4h unsupported by Yahoo
+  "1d": "1d",
+  "1w": "1wk",
+};
+
+const YF_PERIOD_MAP: Record<Timeframe, string> = {
+  "1m": "7d",
+  "5m": "1mo",
+  "15m": "1mo",
+  "1h": "3mo",
+  "4h": "3mo",
+  "1d": "6mo",
+  "1w": "2y",
+};
+
+function round(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
+interface YahooChartResponse {
+  chart?: {
+    result?: Array<{
+      timestamp: number[];
+      indicators: {
+        quote: Array<{
+          open: (number | null)[];
+          high: (number | null)[];
+          low: (number | null)[];
+          close: (number | null)[];
+          volume: (number | null)[];
+        }>;
+      };
+    }>;
+    error: any;
+  };
+}
+
+async function fetchYahooFinance(symbol: string, timeframe: Timeframe, since: number, limit: number): Promise<{ candles: any[]; last_price: number | null }> {
+  const interval = YF_INTERVAL_MAP[timeframe] || "1d";
+  const range = YF_PERIOD_MAP[timeframe] || "6mo";
+
+  // Yahoo Finance chart API: query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range}
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
+
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    return { candles: [], last_price: null };
+  }
+
+  const data: YahooChartResponse = await res.json();
+
+  if (!data.chart?.result?.[0]) {
+    return { candles: [], last_price: null };
+  }
+
+  const result = data.chart.result[0];
+  const timestamps = result.timestamp || [];
+  const quote = result.indicators?.quote?.[0];
+
+  if (!quote) {
+    return { candles: [], last_price: null };
+  }
+
+  const candles: any[] = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const ts = timestamps[i];
+    const o = quote.open?.[i];
+    const h = quote.high?.[i];
+    const l = quote.low?.[i];
+    const c = quote.close?.[i];
+    const v = quote.volume?.[i];
+
+    if (ts < since) continue;
+    if (o == null || h == null || l == null || c == null) continue;
+
+    candles.push({
+      time: ts,
+      open: round(o),
+      high: round(h),
+      low: round(l),
+      close: round(c),
+      volume: v != null ? round(v) : 0,
+    });
+  }
+
+  const trimmed = candles.slice(-limit);
+  let lastPrice: number | null = null;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i].close != null) {
+      lastPrice = trimmed[i].close;
+      break;
+    }
+  }
+
+  return { candles: trimmed, last_price: lastPrice };
+}
+
 export async function GET(
   req: NextRequest,
-  ctx: { params: Promise<{ source: string; symbol: string }> }
+  { params }: { params: Promise<{ source: string; symbol: string }> }
 ) {
-  const { source, symbol } = await ctx.params;
+  const { source, symbol } = await params;
   const tf = (req.nextUrl.searchParams.get("tf") || "1d") as Timeframe;
   const limit = parseInt(req.nextUrl.searchParams.get("limit") || "500", 10);
   const since = parseFloat(
     req.nextUrl.searchParams.get("since") || String(Date.now() / 1000 - 7 * 86400)
   );
 
-  if (!SOURCES[source]) {
-    return NextResponse.json({ error: `Unknown source: ${source}` }, { status: 404 });
-  }
-
   if (source !== "yfinance") {
     return NextResponse.json(
-      { error: "REST polling only supported for yfinance. Use WebSocket directly." },
+      { error: "REST polling only supported for yfinance. Use WebSocket for hyperliquid." },
       { status: 400 }
     );
   }
 
   try {
-    // Dynamic import to avoid bundling yfinance for client builds
-    const yf = await import("yfinance");
-    const yfInterval = YF_INTERVAL_MAP[tf];
-    const yfPeriod = YF_PERIOD_MAP[tf];
-
-    const ticker = new yf.Ticker(symbol);
-    const df = await ticker.history({ period: yfPeriod, interval: yfInterval });
-
-    if (!df || df.isEmpty || df.isEmpty()) {
-      return NextResponse.json({
-        source,
-        symbol,
-        timeframe: tf,
-        candles: [],
-        last_price: null,
-      });
-    }
-
-    const candles = [];
-    const dates = df.index.toArray();
-    for (let i = 0; i < dates.length; i++) {
-      const d = new Date(dates[i] as any);
-      const ts = d.getTime() / 1000;
-      if (ts < since) continue;
-
-      const openVal = df.Open?.[i];
-      const highVal = df.High?.[i];
-      const lowVal = df.Low?.[i];
-      const closeVal = df.Close?.[i];
-      const volVal = df.Volume?.[i];
-
-      // Skip rows where any OHLC value is NaN/missing (incomplete bars)
-      if (
-        openVal == null || isNaN(Number(openVal)) ||
-        highVal == null || isNaN(Number(highVal)) ||
-        lowVal == null || isNaN(Number(lowVal)) ||
-        closeVal == null || isNaN(Number(closeVal))
-      ) {
-        continue;
-      }
-
-      candles.push({
-        time: Math.floor(ts),
-        open: round(Number(openVal)),
-        high: round(Number(highVal)),
-        low: round(Number(lowVal)),
-        close: round(Number(closeVal)),
-        volume: volVal != null && !isNaN(Number(volVal)) ? round(Number(volVal)) : 0,
-      });
-    }
-
-    candles.sort((a, b) => a.time - b.time);
-    const trimmed = candles.slice(-limit);
-
-    // last_price: most recent valid close
-    let lastPrice: number | null = null;
-    for (let i = trimmed.length - 1; i >= 0; i--) {
-      if (trimmed[i].close != null) {
-        lastPrice = trimmed[i].close;
-        break;
-      }
-    }
-
+    const result = await fetchYahooFinance(symbol, tf, since, limit);
     return NextResponse.json({
       source,
       symbol,
       timeframe: tf,
-      candles: trimmed,
-      last_price: lastPrice,
+      candles: result.candles,
+      last_price: result.last_price,
     });
   } catch (err: any) {
     return NextResponse.json({
@@ -118,8 +156,4 @@ export async function GET(
       error: String(err?.message || err),
     });
   }
-}
-
-function round(n: number): number {
-  return Math.round(n * 1e6) / 1e6;
 }

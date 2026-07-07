@@ -299,7 +299,7 @@ export default function Pane({ pane, onChange }: PaneProps) {
             {Object.entries(SOURCES).map(([k, v]) => (
               <option key={k} value={k}>
                 {v.name}
-              </option
+              </option>
             ))}
           </select>
 
