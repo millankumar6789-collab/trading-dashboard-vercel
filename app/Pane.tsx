@@ -145,48 +145,16 @@ export default function Pane({ pane, onChange }: PaneProps) {
     };
     const sec = intervalSec[timeframe] || 60;
 
-    const ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "trades", coin: symbol }));
-    };
-
+    // ── Helpers scoped to this connection ──
+    let ws: WebSocket | null = null;
+    let stopped = false;
     let currentInterval: number | null = null;
     let bucket: Array<{ ts: number; price: number; size: number }> = [];
+    let partialEmitTimer: ReturnType<typeof setInterval> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let flushShown = false; // ensure we emit the in-progress candle once
 
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.channel !== "trades" || !msg.data) return;
-
-      msg.data.forEach((trade: any) => {
-        const price = parseFloat(trade.px);
-        const size = parseFloat(trade.sz);
-        const ts = trade.time / 1e9;
-        const intervalStart = Math.floor(ts / sec) * sec;
-
-        if (currentInterval === null) {
-          currentInterval = intervalStart;
-          bucket = [{ ts, price, size }];
-        } else if (intervalStart === currentInterval) {
-          bucket.push({ ts, price, size });
-        } else if (intervalStart > currentInterval) {
-          emitCandle(bucket, currentInterval);
-          currentInterval = intervalStart;
-          bucket = [{ ts, price, size }];
-        }
-      });
-    };
-
-    ws.onclose = () => {
-      reconnectTimerRef.current = setTimeout(() => {
-        connectHyperliquid(symbol, timeframe);
-      }, 3000);
-    };
-
-    ws.onerror = () => ws.close();
-
-    function emitCandle(trades: typeof bucket, interval: number) {
+    function emitCandle(trades: Array<{ ts: number; price: number; size: number }>, interval: number) {
       if (!trades.length) return;
       const prices = trades.map((t) => t.price);
       const candle: Candle = {
@@ -200,6 +168,124 @@ export default function Pane({ pane, onChange }: PaneProps) {
       seriesRef.current?.update(candle as any);
       updateTicker(candle.close, candle);
     }
+
+    // Emit the in-progress candle immediately on first trades,
+    // then update it every 2s with the latest OHLC of the current bucket
+    // (so the chart shows a "live candle" forming rather than waiting
+    // for the interval to close).
+    function startPartialEmit() {
+      if (partialEmitTimer) return;
+      partialEmitTimer = setInterval(() => {
+        if (currentInterval === null || bucket.length === 0 || stopped) return;
+        const interval = currentInterval;
+        const trades = bucket;
+        emitCandle(trades, interval);
+        flushShown = true;
+      }, 2000);
+    }
+
+    function stopAll() {
+      stopped = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (partialEmitTimer) {
+        clearInterval(partialEmitTimer);
+        partialEmitTimer = null;
+      }
+      if (ws && ws.readyState <= WebSocket.OPEN) {
+        try { ws.close(); } catch {}
+      }
+      ws = null;
+    }
+
+    // Cleanup hook: the parent component calls this when source/timeframe changes
+    wsRef.current = { close: stopAll } as any;
+
+    function open() {
+      if (stopped) return;
+      try {
+        ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
+      } catch (e) {
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        ws?.send(JSON.stringify({ type: "trades", coin: symbol }));
+        startPartialEmit();
+      };
+
+      ws.onmessage = (ev) => {
+        let msg: any;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+
+        // HL also sends initial historical trades after subscription; treat as
+        // a normal trade stream so we get the most recent price history.
+        if (msg.channel !== "trades" || !msg.data) return;
+
+        for (const trade of msg.data) {
+          const price = parseFloat(trade.px);
+          const size = parseFloat(trade.sz);
+          if (!isFinite(price) || !isFinite(size)) continue;
+          const ts = trade.time / 1e9;
+          const intervalStart = Math.floor(ts / sec) * sec;
+
+          if (currentInterval === null) {
+            currentInterval = intervalStart;
+            bucket = [{ ts, price, size }];
+            // Seed chart immediately so user isn't staring at blank
+            emitCandle(bucket, intervalStart);
+            flushShown = true;
+            continue;
+          }
+
+          if (intervalStart === currentInterval) {
+            bucket.push({ ts, price, size });
+            continue;
+          }
+
+          if (intervalStart > currentInterval) {
+            // Interval rolled forward — emit completed candle, start new bucket
+            if (!flushShown) {
+              // First-ever bucket that did emit a partial — still flush once
+              emitCandle(bucket, currentInterval);
+            } else {
+              emitCandle(bucket, currentInterval);
+            }
+            currentInterval = intervalStart;
+            bucket = [{ ts, price, size }];
+            emitCandle(bucket, intervalStart); // immediate seed for new interval
+            flushShown = true;
+            continue;
+          }
+
+          // Late trade (intervalStart < currentInterval) — append to bucket
+          bucket.push({ ts, price, size });
+        }
+      };
+
+      ws.onclose = () => {
+        if (stopped) return;
+        ws = null;
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        // onclose will fire next; let that handle reconnect
+      };
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        open();
+      }, 3000);
+    }
+
+    open();
   }
 
   // ── yfinance REST polling feed (proxied through /api/candles) ──
