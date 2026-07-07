@@ -50,17 +50,27 @@ export const NSE_SYMBOLS = [
 ];
 
 // Precious metals & commodities (Yahoo Finance symbols)
+//
+// Note: Yahoo Finance deprecated XAUUSD=X / XAGUSD=X spot symbols recently.
+// The closest spot-price proxies are COMEX futures contracts:
+//   GC=F  → gold futures (USD/oz)
+//   SI=F  → silver futures (USD/oz)
+//   PL=F  → platinum futures
+//   PA=F  → palladium futures
+//   HG=F  → copper futures
+//
+// For Indian-market gold ETF exposure:
+//   GOLDBEES.NS → Nippon India Gold BeES (NSE)
 export const METALS_SYMBOLS = [
-  "XAUUSD=X",  // Gold spot
-  "XAGUSD=X",  // Silver spot
-  "GC=F",      // Gold futures
-  "SI=F",      // Silver futures
-  "PL=F",      // Platinum futures
-  "PA=F",      // Palladium futures
-  "HG=F",      // Copper futures
-  "CL=F",      // Crude oil WTI futures
-  "BZ=F",      // Brent crude futures
-  "NG=F",      // Natural gas futures
+  "GC=F",        // Gold (COMEX futures, USD/oz)
+  "SI=F",        // Silver (COMEX futures, USD/oz)
+  "PL=F",        // Platinum (NYMEX futures)
+  "PA=F",        // Palladium (NYMEX futures)
+  "HG=F",        // Copper (COMEX futures)
+  "CL=F",        // Crude oil WTI (NYMEX)
+  "BZ=F",        // Brent crude (ICE)
+  "NG=F",        // Natural gas (NYMEX)
+  "GOLDBEES.NS", // Nippon Gold BeES ETF (NSE India)
 ];
 
 // ──────────────────────────────────────────────
