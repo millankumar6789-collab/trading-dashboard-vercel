@@ -130,9 +130,9 @@ export async function GET(
     req.nextUrl.searchParams.get("since") || String(Date.now() / 1000 - 7 * 86400)
   );
 
-  if (source !== "yfinance") {
+  if (source !== "yfinance" && source !== "metals") {
     return NextResponse.json(
-      { error: "REST polling only supported for yfinance. Use WebSocket for hyperliquid." },
+      { error: "REST polling only supported for yfinance/metals. Use WebSocket for hyperliquid." },
       { status: 400 }
     );
   }

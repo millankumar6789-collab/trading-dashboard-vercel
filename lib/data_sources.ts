@@ -49,6 +49,20 @@ export const NSE_SYMBOLS = [
   "TATASTEEL.NS", "NTPC.NS", "ADANIENT.NS", "ADANIPORTS.NS", "POWERGRID.NS",
 ];
 
+// Precious metals & commodities (Yahoo Finance symbols)
+export const METALS_SYMBOLS = [
+  "XAUUSD=X",  // Gold spot
+  "XAGUSD=X",  // Silver spot
+  "GC=F",      // Gold futures
+  "SI=F",      // Silver futures
+  "PL=F",      // Platinum futures
+  "PA=F",      // Palladium futures
+  "HG=F",      // Copper futures
+  "CL=F",      // Crude oil WTI futures
+  "BZ=F",      // Brent crude futures
+  "NG=F",      // Natural gas futures
+];
+
 // ──────────────────────────────────────────────
 // Source registry
 // ──────────────────────────────────────────────
@@ -63,6 +77,12 @@ export const SOURCES: Record<string, DataFeed> = {
   yfinance: {
     name: "Yahoo Finance (NSE)",
     symbols: NSE_SYMBOLS,
+    defaultTimeframe: "1d",
+    type: "rest_poll",
+  },
+  metals: {
+    name: "Metals & Commodities",
+    symbols: METALS_SYMBOLS,
     defaultTimeframe: "1d",
     type: "rest_poll",
   },

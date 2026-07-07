@@ -41,59 +41,81 @@ export default function Pane({ pane, onChange }: PaneProps) {
   const [tickerClass, setTickerClass] = useState<string>("");
   const [priceDisplay, setPriceDisplay] = useState<string>("--");
   const [changeDisplay, setChangeDisplay] = useState<string>("--");
+  const [chartReady, setChartReady] = useState(false);
 
   // ── Chart initialisation ──
   useEffect(() => {
     if (!containerRef.current) return;
     const el = containerRef.current;
 
-    const chart = createChart(el, {
-      layout: {
-        background: { type: "solid" as any, color: "#161b22" },
-        textColor: "#8b949e",
-      },
-      grid: {
-        vertLines: { color: "#21262d" },
-        horzLines: { color: "#21262d" },
-      },
-      crosshair: { mode: 0 }, // Normal
-      rightPriceScale: { borderColor: "#30363d" },
-      timeScale: {
-        borderColor: "#30363d",
-        timeVisible: true,
-        secondsVisible: pane.timeframe === "1m",
-      },
-      width: el.clientWidth,
-      height: el.clientHeight,
-    });
+    // Defer chart creation to next frame so CSS layout has settled
+    // (otherwise clientWidth/Height can be 0 on first mount)
+    let chart: IChartApi | null = null;
+    let series: ISeriesApi<"Candlestick"> | null = null;
+    let resizeObs: ResizeObserver | null = null;
 
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderDownColor: "#ef4444",
-      borderUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
-      wickUpColor: "#22c55e",
-    });
+    const init = () => {
+      const w = el.clientWidth || 600;
+      const h = el.clientHeight || 400;
 
-    chartRef.current = chart;
-    seriesRef.current = series;
+      chart = createChart(el, {
+        layout: {
+          background: { type: "solid" as any, color: "#161b22" },
+          textColor: "#8b949e",
+        },
+        grid: {
+          vertLines: { color: "#21262d" },
+          horzLines: { color: "#21262d" },
+        },
+        crosshair: { mode: 0 },
+        rightPriceScale: { borderColor: "#30363d" },
+        timeScale: {
+          borderColor: "#30363d",
+          timeVisible: true,
+          secondsVisible: pane.timeframe === "1m",
+        },
+        width: w,
+        height: h,
+      });
 
-    const ro = new ResizeObserver(() => {
-      chart.resize(el.clientWidth, el.clientHeight);
-    });
-    ro.observe(el);
+      series = chart.addSeries(CandlestickSeries, {
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderDownColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+      });
+
+      chartRef.current = chart;
+      seriesRef.current = series;
+
+      resizeObs = new ResizeObserver(() => {
+        if (chart) chart.resize(el.clientWidth, el.clientHeight);
+      });
+      resizeObs.observe(el);
+
+      setChartReady(true);
+    };
+
+    const raf = requestAnimationFrame(init);
 
     return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
+      cancelAnimationFrame(raf);
+      if (resizeObs) resizeObs.disconnect();
+      if (chart) {
+        chart.remove();
+        chartRef.current = null;
+        seriesRef.current = null;
+      }
+      setChartReady(false);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Data feed lifecycle ──
   useEffect(() => {
+    if (!chartReady) return;
     if (!chartRef.current) return;
 
     seriesRef.current?.setData([]);
@@ -105,15 +127,15 @@ export default function Pane({ pane, onChange }: PaneProps) {
 
     if (pane.source === "hyperliquid") {
       connectHyperliquid(pane.symbol, pane.timeframe);
-    } else if (pane.source === "yfinance") {
-      pollYFinance(pane.symbol, pane.timeframe);
+    } else if (pane.source === "yfinance" || pane.source === "metals") {
+      pollYFinance(pane.symbol, pane.timeframe, pane.source);
     }
 
     return () => {
       killFeeds();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.source, pane.symbol, pane.timeframe]);
+  }, [chartReady, pane.source, pane.symbol, pane.timeframe]);
 
   // ── Hyperliquid WebSocket feed (client → HL directly) ──
   function connectHyperliquid(symbol: string, timeframe: Timeframe) {
@@ -181,7 +203,7 @@ export default function Pane({ pane, onChange }: PaneProps) {
   }
 
   // ── yfinance REST polling feed (proxied through /api/candles) ──
-  async function pollYFinance(symbol: string, timeframe: Timeframe) {
+  async function pollYFinance(symbol: string, timeframe: Timeframe, source: string = "yfinance") {
     let lastTs = Date.now() / 1000 - 7 * 86400;
 
     const poll = async () => {
@@ -191,7 +213,7 @@ export default function Pane({ pane, onChange }: PaneProps) {
           since: String(lastTs),
           limit: "500",
         });
-        const resp = await fetch(`/api/candles/yfinance/${encodeURIComponent(symbol)}?${qs}`);
+        const resp = await fetch(`/api/candles/${source}/${encodeURIComponent(symbol)}?${qs}`);
         const data = await resp.json();
 
         if (data.candles?.length) {

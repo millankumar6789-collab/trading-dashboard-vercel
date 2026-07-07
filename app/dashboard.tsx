@@ -118,8 +118,9 @@ export default function Dashboard() {
         if (i < prev.length) {
           next.push(prev[i]);
         } else {
-          // New pane — pick a different default symbol than existing panes for variety
-          const sourceKey = count > 4 ? "yfinance" : "hyperliquid";
+          // New pane — pick a varied source/symbol for new panes
+          const choices = ["hyperliquid", "yfinance", "metals"];
+          const sourceKey = choices[i % choices.length];
           const feed = SOURCES[sourceKey];
           next.push({
             id: i,
