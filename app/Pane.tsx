@@ -49,14 +49,14 @@ export default function Pane({ pane, onChange }: PaneProps) {
 
     const chart = createChart(el, {
       layout: {
-        background: { type: 1, color: "#161b22" },
+        background: { type: "solid" as any, color: "#161b22" },
         textColor: "#8b949e",
       },
       grid: {
         vertLines: { color: "#21262d" },
         horzLines: { color: "#21262d" },
       },
-      crosshair: { mode: 0 },
+      crosshair: { mode: 0 }, // Normal
       rightPriceScale: { borderColor: "#30363d" },
       timeScale: {
         borderColor: "#30363d",
